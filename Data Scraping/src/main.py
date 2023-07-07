@@ -1,4 +1,4 @@
-import getInfo
+import scraper
 import time
 import json
 
@@ -6,7 +6,7 @@ if __name__ == "__main__":
     start_time = time.time()
 
     # Scrape manga data
-    all_manga_data = getInfo.scrape_manga_data()
+    all_manga_data = scraper.scrape_manga_data()
 
     # Convert the Python objects into JSON and export it to manga.json file.
     with open('manga_list.json', 'w', encoding='utf-8') as f:
