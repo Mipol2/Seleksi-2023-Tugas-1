@@ -6,5 +6,5 @@ class Manga:
     def to_dict(self):
         return {
             "id": self.id,
-            "language": self.language,
+            "language": self.language
         }

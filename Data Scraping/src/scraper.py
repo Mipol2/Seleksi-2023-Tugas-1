@@ -1,14 +1,21 @@
-import time
 import concurrent.futures
+import json
+import os
+import time
 from bs4 import BeautifulSoup
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import json
+from tqdm import tqdm
 from manga import Manga
+
+class MangaEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Manga):
+            return obj.__dict__
+        return super().default(obj)
 
 def extract_manga_info(item):
     # Extract id
@@ -25,70 +32,83 @@ def extract_manga_info(item):
     language = item.find('span', class_='').get('title', '')
 
     # Create a Manga object with an empty description
-    manga_obj = Manga(id, title, author, language,'')
+    manga_obj = Manga(id, title, author, language, '')
 
     return manga_obj
 
-def extract_manga_description(id):
-    # Set up the Chrome driver
+def scrape_manga_info():
     options = Options()
-    options.add_argument("--headless")
-    service = Service('path_to_chromedriver')
+    options.add_argument('headless')
+    options.add_experimental_option('excludeSwitches', ['enable-logging'])
+    driver = webdriver.Chrome(options=options)
 
-    with webdriver.Chrome(service=service, options=options) as driver:
-        # Navigate to the manga page
-        driver.get(f"https://mangaplus.shueisha.co.jp/titles/{id}")
-
-        # Wait for the description element to be visible
-        wait = WebDriverWait(driver, 20)
-        wait.until(EC.visibility_of_element_located((By.CLASS_NAME, 'TitleDetailHeader-module_overview_32fOi')))
-
-        # Get the HTML content of the page
-        html = driver.page_source
-
-    # Parse the HTML content with BeautifulSoup
-    soup = BeautifulSoup(html, "html.parser")
-
-    # Extract the manga description
-    manga_description = soup.find('p', class_='TitleDetailHeader-module_overview_32fOi').text.strip()
-
-    return manga_description
-
-def scrape_manga_data():
-    # Set up the Chrome driver
-    options = Options()
-    options.add_argument("--headless")
-    service = Service('path_to_chromedriver')
-
-    with webdriver.Chrome(service=service, options=options) as driver:
-        # Navigate to the manga list page
+    with driver as driver:
         driver.get("https://mangaplus.shueisha.co.jp/manga_list/all")
 
-        # Wait for the manga card elements to be visible
         wait = WebDriverWait(driver, 20)
         wait.until(EC.visibility_of_element_located((By.CLASS_NAME, 'AllTitle-module_allTitle_1CIUC')))
 
-        # Get the HTML content of the page
         html = driver.page_source
 
-    # Parse the HTML content with BeautifulSoup
     soup = BeautifulSoup(html, "html.parser")
 
-    # Extract manga information using multiple threads
     mangas = soup.find_all('a', class_='AllTitle-module_allTitle_1CIUC')
+    manga_objects = list(map(extract_manga_info, mangas))
+
+    # Progress bar initialization for manga info scraping
+    total_manga_count = len(manga_objects)
+    progress_bar = tqdm(total=total_manga_count, desc="Scraping Manga info", unit="manga")
+
+    for manga in manga_objects:
+        # Scraping manga info here
+        progress_bar.update(1)
+
+    progress_bar.close()
+
+    return manga_objects
+
+def scrape_manga_descriptions(manga_objects):
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        manga_objects = list(executor.map(extract_manga_info, mangas))
+        description_futures = []
+        for manga in manga_objects:
+            description_futures.append(executor.submit(extract_manga_description, manga))
 
-    # Extract manga descriptions using multiple processes
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        manga_ids = [manga.id for manga in manga_objects]
-        manga_descriptions = list(executor.map(extract_manga_description, manga_ids))
+        # Progress bar initialization for manga description scraping
+        total_manga_count = len(manga_objects)
+        progress_bar = tqdm(total=total_manga_count, desc="Scraping Manga Descriptions", unit="manga")
 
-    # Update manga objects with descriptions
-    for manga, description in zip(manga_objects, manga_descriptions):
-        manga.description = description
+        # Monitor progress of description extraction
+        while not all(future.done() for future in description_futures):
+            completed_count = sum(future.done() for future in description_futures)
+            progress_bar.update(completed_count - progress_bar.n)
+            time.sleep(0.1)
 
-    # Convert manga objects to dictionaries
-    manga_data = [manga.to_dict() for manga in manga_objects]
+        progress_bar.close()
 
-    return manga_data
+def extract_manga_description(manga):
+    try:
+        options = Options()
+        options.add_argument('headless')
+        options.add_experimental_option('excludeSwitches', ['enable-logging'])
+        driver = webdriver.Chrome(options=options)
+
+        with driver as driver:
+            driver.get(f"https://mangaplus.shueisha.co.jp/titles/{manga.id}")
+
+            wait = WebDriverWait(driver, 20)
+            wait.until(EC.visibility_of_element_located((By.CLASS_NAME, 'TitleDetailHeader-module_overview_32fOi')))
+
+            html = driver.page_source
+
+        soup = BeautifulSoup(html, "html.parser")
+        manga_description = soup.find('p', class_='TitleDetailHeader-module_overview_32fOi').text.strip()
+
+        manga.description = manga_description
+    except Exception as e:
+        print(f"Error occurred while scraping description for manga with id {manga.id}: {str(e)}")
+        manga.description = ""
+
+def scrape_manga_data():
+    manga_objects = scrape_manga_info()
+    scrape_manga_descriptions(manga_objects)
+    return manga_objects
